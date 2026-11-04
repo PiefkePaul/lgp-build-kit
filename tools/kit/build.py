@@ -606,10 +606,40 @@ def auto_jobs(cpus: int, free_mib: int | None) -> int:
     return max(1, min(cpus, (free_mib - RESERVE_MIB) // JOB_MIB))
 
 
+def clamp_future_mtimes(root: Path, skip: tuple[Path, ...] = (), slack: float = 60.0) -> int:
+    """Sets files under root whose modification time lies in the future to now; returns how many.
+    ZIP entries carry local time without a zone: a package packed in UTC+1 and unpacked in UTC-5 holds sources five
+    hours ahead, and Ninja then stops with "manifest 'build.ninja' still dirty after 100 tries" (Mac VM, 2026-11-03)."""
+    now = time.time()
+    skipped = {os.path.normcase(os.path.abspath(p)) for p in skip}
+    count = 0
+    for top, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != ".git" and not (top == str(root) and d == "build")  # developers' trees
+                   and os.path.normcase(os.path.join(top, d)) not in skipped]
+        for name in files:
+            path = os.path.join(top, name)
+            try:
+                if os.lstat(path).st_mtime > now + slack and not os.path.islink(path):
+                    os.utime(path, (now, now))
+                    count += 1
+            except OSError:
+                pass
+    return count
+
+
+def cached_tools() -> str:
+    """The tools build.py has loaded into the tool cache, by folder name (llvm-mingw, JDK, Android SDK, Node.js …)."""
+    try:
+        names = sorted(p.name for p in tool_cache().iterdir() if p.is_dir() and not p.name.endswith(".tmp"))
+    except OSError:
+        names = []
+    return ", ".join(names) or "empty"
+
+
 def outside_folder(work: Path) -> list[str]:
     """What this build left outside the repo folder (shown at the end; the ready-made package deletes cleanly)."""
     found = []
-    for path, what in ((tool_cache(), "tools (llvm-mingw, JDK, Android SDK, rcodesign)"),
+    for path, what in ((tool_cache(), f"tools ({cached_tools()})"),
                        (user_data_dir(), "Android signing key: keep it, otherwise updates only work after "
                                          "uninstalling (which deletes the saves)"),
                        (work, "work folder with game data")):
@@ -1253,7 +1283,10 @@ class Toolchain:
             self.installs.append((f"Microsoft's JDK {JDK[0]} as a folder (about 200 MB, no admin rights)",
                                   [sys.executable, str(Path(__file__).resolve()), "fetch-jdk"]))
         if "Node.js" in missing:
-            if os.name == "nt" and winget and shutil.which("winget"):
+            if DUMP and DUMP.node_archive():  # a folder in the tool cache, nothing installed (as the JDK)
+                self.installs.append((f"Node.js {DUMP.NODE_VERSION} as a folder (once, about 50 MB, no admin rights)",
+                                      [sys.executable, str(Path(DUMP.__file__).resolve()), "fetch-node"]))
+            elif os.name == "nt" and winget and shutil.which("winget"):
                 self.installs.append(("Node.js LTS (winget)", winget + ["OpenJS.NodeJS.LTS"]))
             elif sys.platform == "darwin" and shutil.which("brew"):
                 self.installs.append(("Node.js (Homebrew)", ["brew", "install", "node"]))
@@ -1402,7 +1435,7 @@ class Builder:
                 os.replace(plain, raw)
             if own_kit:  # what is left of <work>/kit is also in the game folder now
                 shutil.rmtree(self.kit, ignore_errors=True)
-            elif self.extra_files:
+            if self.extra_files:  # with a dump only the package's kit-files/ (the dump was unpacked without them)
                 copy_kit_files(self.extra_files, self.game)
             derive_mod_files(self.game, raw)
         if self.args.no_compress and not romfs_dir:
@@ -1724,6 +1757,10 @@ class Builder:
         self.check_paths()
         if not self.args.dry_run:
             self.work.mkdir(parents=True, exist_ok=True)
+            fixed = clamp_future_mtimes(REPO, skip=(self.work,))
+            if fixed:
+                say(f"{fixed} files in the repo folder had a modification time in the future (a ZIP packed in another "
+                    "time zone); set to now, otherwise Ninja would rebuild without end")
         start = wall_clock()
         say(self.jobs_note)
         if self.args.dump:
@@ -1939,7 +1976,7 @@ def ensure_tools(tc: Toolchain) -> bool:
         say("\nChecking again …")
     for note in tc.notes:
         say("  Note: " + note)
-    say("  Everything needed is there." if tc.optional else "  Everything is there.")
+    say("  All tools needed for the build are there." if tc.optional else "  All tools for the build are there.")
     return True
 
 
@@ -2529,7 +2566,7 @@ def main(argv: list[str] | None = None) -> int:
         for problem in tc.problems:
             say("MISSING: " + problem)
         if ok:
-            say("Everything is there.")
+            say("All tools for the build are there.")
         if not ok and not getattr(args, "dry_run", False):
             return 1
         if args.command == "doctor":

@@ -95,6 +95,30 @@ class MakeBauset(unittest.TestCase):
         # Without kit files (the CI package) the repository may be the private one.
         mb.make(self.tmp / "out", self.tmp / "cache", self.repo, [])
 
+    def test_private_kit_package(self):
+        """--private-kit (the kit for friends, lgp-kit): the dump unpacking may come along, the internal notes may not,
+        and the name says lgp-kit so the package is never taken for a public one."""
+        git = ["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"]
+        (self.repo / "tools" / "extract").mkdir(parents=True)
+        (self.repo / "tools" / "extract" / "x.py").write_text("x")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "kit"], check=True)
+        kit = self.tmp / "mods-package"
+        kit.mkdir()
+        (kit / "game.cfg").write_text("c")
+        package = mb.make(self.tmp / "out", self.tmp / "cache", self.repo, [], kit, private_kit=True)
+        self.assertTrue(package.name.startswith("lgp-kit-"), package.name)
+        with zipfile.ZipFile(package) as z:
+            self.assertIn("lgp-recomp/tools/extract/x.py", z.namelist())
+            self.assertIn("lgp-recomp/kit-files/game.cfg", z.namelist())
+        (self.repo / "CLAUDE.md").write_text("private")
+        subprocess.run(git + ["add", "-A"], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "private"], check=True)
+        with self.assertRaises(SystemExit) as e:
+            mb.make(self.tmp / "out2", self.tmp / "cache", self.repo, [], kit, private_kit=True)
+        self.assertIn("CLAUDE.md", str(e.exception))
+        self.assertFalse((self.tmp / "out2").exists())
+
     def test_kit_files_of_other_builds_come_along(self):
         other = next(b for b in mb.kb.SUPPORTED_BUILDS if b != mb.kb.MAIN_BUILD_ID)
         kit = self.tmp / "mods-package"
@@ -130,6 +154,23 @@ class MakeBauset(unittest.TestCase):
         self.assertEqual(mode["lgp-recomp/lgp-bauen.command"], 0o755)
         self.assertEqual(mode["lgp-recomp/lgp-bauen.cmd"], 0o644)
         self.assertEqual(systems, {3}, "unzip ignores Unix modes of entries that say DOS")
+
+    def test_entries_are_not_in_the_future_anywhere(self):
+        """Mac VM 2026-11-03: entries in the packer's local time (CET) lay an hour ahead for a Mac in UTC, and Ninja
+        stopped with "build.ninja still dirty". Every entry gets the commit's day minus one, whatever the clock says."""
+        import calendar
+        import time as _time
+        package = mb.make(self.tmp / "out", self.tmp / "cache", self.repo, [])
+        with zipfile.ZipFile(package) as z:
+            stamps = {i.date_time for i in z.infolist()}
+        self.assertEqual(len(stamps), 1, stamps)
+        commit = int(subprocess.run(["git", "-C", str(self.repo), "log", "-1", "--format=%ct"], capture_output=True,
+                                    text=True, check=True).stdout)
+        stamp = stamps.pop()
+        day = _time.gmtime(commit - 86400)
+        self.assertEqual(stamp, (day.tm_year, day.tm_mon, day.tm_mday, 0, 0, 0))
+        # Read as local time in UTC-12, the furthest behind, the entry is still before the commit
+        self.assertLess(calendar.timegm(stamp) + 12 * 3600, commit)
 
     def test_kit_files_without_game_cfg_stop(self):
         (self.tmp / "empty").mkdir()

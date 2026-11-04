@@ -27,6 +27,11 @@ LAN addresses, team IDs), one per line, '#' starts a comment. It is read from
 With --git the folder becomes a fresh git repository with a single commit;
 pushing it is left to the person publishing.
 
+--private-kit writes the private build kit for friends instead (repository
+lgp-kit, never public): the same tree with the decryption parts kept, omit
+blocks kept (only their marker lines dropped) and public-only blocks dropped.
+Checks 1-3 and 5 still apply.
+
 Exit code 0 = clean snapshot written, 1 = findings (folder is kept for
 inspection), 2 = usage/internal error. Standard library only.
 """
@@ -76,6 +81,7 @@ LEGAL_EXCLUDES = (
     "tests/tools/test_kit_dump.py",
     "docs/agents/bau-kit.md",
     "docs/knowledge/switch-dumps-im-browser-entschluesseln.md",
+    "tools/kit/guide-images/dump/",  # screenshots of the dump path (NSP and keys)
 )
 
 # Names of the left-out decryption parts; an exported file that still names one is refused.
@@ -89,6 +95,7 @@ LEGAL_REFERENCES = (
     "tests/kit",
     "bau-kit.md",
     "switch-dumps-im-browser-entschluesseln",
+    "guide-images/dump",
 )
 
 # This tool and its test name the markers and the parts themselves.
@@ -195,8 +202,9 @@ def unlink_left_out(name: str, text: str, excludes: tuple[str, ...]) -> tuple[st
     return text, count
 
 
-def apply_markers(text: str) -> tuple[str, list[str]]:
-    """Drop omit blocks, unwrap public-only blocks; returns the new text and marker errors."""
+def apply_markers(text: str, private_kit: bool = False) -> tuple[str, list[str]]:
+    """Drop omit blocks, unwrap public-only blocks; returns the new text and marker errors.
+    private_kit: the other way round, keep the omit blocks' text and drop the public-only blocks."""
     lines = text.splitlines(keepends=True)
     kept: list[str] = []
     errors: list[str] = []
@@ -210,7 +218,7 @@ def apply_markers(text: str) -> tuple[str, list[str]]:
                 marker = name
                 break
         if marker is None:
-            if mode != "omit":
+            if mode != ("only" if private_kit else "omit"):
                 kept.append(line)
             continue
         if marker.endswith("-start"):
@@ -227,7 +235,7 @@ def apply_markers(text: str) -> tuple[str, list[str]]:
 
 
 def scan(out: Path, files: list[str], deny: list[str], excludes: tuple[str, ...] = (),
-         unlinked: list[int] | None = None) -> list[str]:
+         unlinked: list[int] | None = None, private_kit: bool = False) -> list[str]:
     findings = []
     for name in files:
         try:
@@ -237,7 +245,7 @@ def scan(out: Path, files: list[str], deny: list[str], excludes: tuple[str, ...]
         exempt = name in MARKER_EXEMPT
         changed = False
         if not exempt and "lgp-public:" in text:
-            text, errors = apply_markers(text)
+            text, errors = apply_markers(text, private_kit)
             findings += [f"{name}:{e}" for e in errors]
             changed = True
         if name.endswith(".md") and excludes:
@@ -249,7 +257,7 @@ def scan(out: Path, files: list[str], deny: list[str], excludes: tuple[str, ...]
         if changed:
             (out / name).write_bytes(text.encode("utf-8"))
         for lineno, line in enumerate(text.splitlines(), 1):
-            for ref in () if exempt else LEGAL_REFERENCES:
+            for ref in () if exempt or private_kit else LEGAL_REFERENCES:
                 if ref in line:
                     findings.append(f"{name}:{lineno}: names left-out decryption part {ref!r}")
             for pattern in PRIVATE_PATTERNS:
@@ -301,7 +309,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exclude", action="append", default=[],
                     help="extra path or folder/ to leave out (repeatable)")
     ap.add_argument("--git", action="store_true", help="init a fresh repository with one commit")
-    ap.add_argument("--message", default="Public snapshot", help="commit message with --git")
+    ap.add_argument("--message", help="commit message with --git (default 'Public snapshot' or 'Private kit snapshot')")
+    ap.add_argument("--private-kit", action="store_true",
+                    help="the private build kit (lgp-kit): keep the decryption parts and the omit blocks")
     args = ap.parse_args(argv)
 
     if args.out.exists() and any(args.out.iterdir()):
@@ -318,7 +328,7 @@ def main(argv: list[str] | None = None) -> int:
         print("warning: no deny list, only built-in path patterns are checked", file=sys.stderr)
 
     args.out.mkdir(parents=True, exist_ok=True)
-    excludes = DEFAULT_EXCLUDES + LEGAL_EXCLUDES + tuple(args.exclude)
+    excludes = DEFAULT_EXCLUDES + (() if args.private_kit else LEGAL_EXCLUDES) + tuple(args.exclude)
     try:
         executables: list[str] = []
         files = export(args.ref, args.out, excludes, executables)
@@ -327,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     unlinked: list[int] = []
-    findings = scan(args.out, files, deny, excludes, unlinked)
+    findings = scan(args.out, files, deny, excludes, unlinked, args.private_kit)
     if unlinked:
         print(f"links into left-out paths removed: {sum(unlinked)} in {len(unlinked)} files")
     for f in findings:
@@ -338,8 +348,9 @@ def main(argv: list[str] | None = None) -> int:
               f"folder kept at {args.out}", file=sys.stderr)
         return 1
     if args.git:
-        make_git(args.out, args.message, executables)
-    print(f"snapshot ok: {len(files)} files from {args.ref} in {args.out}, "
+        make_git(args.out, args.message or ("Private kit snapshot" if args.private_kit else "Public snapshot"),
+                 executables)
+    print(f"{'private kit ' if args.private_kit else ''}snapshot ok: {len(files)} files from {args.ref} in {args.out}, "
           f"{len(deny)} deny-list entries checked")
     return 0
 

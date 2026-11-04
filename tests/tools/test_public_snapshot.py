@@ -130,6 +130,36 @@ class PublicSnapshotTest(unittest.TestCase):
         self.assertEqual((self.out / "doc.md").read_text(), "a\npublic note\nb\n")
         self.assertEqual((self.out / "CMakeLists.txt").read_text(), "x()\n")
 
+    def test_private_kit_keeps_the_decryption(self):
+        """--private-kit (lgp-kit, never public): decryption parts and omit blocks stay, public-only blocks go,
+        the internal notes and the private-path and deny checks stay as for the public snapshot."""
+        (self.repo / "tools" / "kit" / "web" / "lib").mkdir(parents=True)
+        (self.repo / "tools" / "kit" / "web" / "lib" / "nca.js").write_text("// decrypt\n")
+        (self.repo / "doc.md").write_text(
+            "a\n<!-- lgp-public: omit-start -->\nrun cli.mjs extract\n<!-- lgp-public: omit-end -->\n"
+            "<!-- lgp-public: only-start\npublic note\nlgp-public: only-end -->\nb\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "kit")
+        rc, out = self.run_tool("--private-kit", "--git")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("private kit snapshot ok", out)
+        self.assertTrue((self.out / "tools" / "kit" / "web" / "lib" / "nca.js").is_file())
+        self.assertEqual((self.out / "doc.md").read_text(), "a\nrun cli.mjs extract\nb\n")
+        for gone in ("CLAUDE.md", "docs/project-setup", "docs/analysis", "docs/agents", ".github/workflows"):
+            self.assertFalse((self.out / gone).exists(), gone)
+        msg = subprocess.run(["git", "log", "--format=%s"], cwd=self.out, capture_output=True, text=True,
+                             check=True).stdout.strip()
+        self.assertEqual(msg, "Private kit snapshot")
+
+    def test_private_kit_still_refuses_private_strings(self):
+        (self.repo / "net.md").write_text("<!-- lgp-public: omit-start -->\nserver secret-host\n"
+                                          "<!-- lgp-public: omit-end -->\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-q", "-m", "leak")
+        rc, out = self.run_tool("--private-kit")
+        self.assertEqual(rc, 1)
+        self.assertIn("net.md:1: deny-list entry #1", out)  # line of the written file
+
     def test_reference_to_left_out_part_is_refused(self):
         (self.repo / "how.md").write_text("node tools/kit/cli.mjs extract\n")
         git(self.repo, "add", "-A")

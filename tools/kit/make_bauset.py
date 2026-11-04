@@ -11,8 +11,10 @@ No game data: without --kit-files the package is the same for everyone (the CI j
 --no-tools leaves bauset/ out: lgp-build-kit-<commit>.zip, the source code with kit-files/ for Mac and Linux.
 With --kit-files the package is a public release: run this script from the folder public_snapshot.py --git wrote;
 from the private repository it stops (PRIVATE_ONLY).
+--private-kit is for the private kit for friends (public_snapshot.py --private-kit): the package may then carry the
+dump unpacking and is named lgp-kit-…, so it is never taken for a public one; the internal notes still stop it.
 
-  python3 tools/kit/make_bauset.py --out DIR [--cache DIR] [--kit-files DIR] [--no-tools]
+  python3 tools/kit/make_bauset.py --out DIR [--cache DIR] [--kit-files DIR] [--no-tools] [--private-kit]
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -126,23 +129,30 @@ def copy_kit_files(src: Path, dest: Path) -> int:
 
 # Paths that only the private repository has (tools/publish/public_snapshot.py leaves them out). A release package
 # (--kit-files) is public: it must come from the snapshot, never carry the decryption or the internal notes.
-PRIVATE_ONLY = ("CLAUDE.md", "docs/project-setup/", "docs/analysis/", "docs/agents/", "tools/extract/")
+# The private kit (--private-kit) may carry the second group, never the first.
+PRIVATE_NOTES = ("CLAUDE.md", "docs/project-setup/", "docs/analysis/", "docs/agents/")
+PRIVATE_ONLY = PRIVATE_NOTES + ("tools/extract/",)
 
 
-def private_paths(repo: Path) -> list[str]:
-    """Paths of HEAD in repo that the public snapshot leaves out."""
+def private_paths(repo: Path, paths: tuple[str, ...] = PRIVATE_ONLY) -> list[str]:
+    """Paths of HEAD in repo that the public snapshot leaves out (or the given ones)."""
     names = subprocess.run(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", "HEAD"], capture_output=True,
                            text=True, check=True).stdout.splitlines()
-    return sorted({p for p in PRIVATE_ONLY for n in names if n == p or (p.endswith("/") and n.startswith(p))})
+    return sorted({p for p in paths for n in names if n == p or (p.endswith("/") and n.startswith(p))})
 
 
-def make(out: Path, cache: Path, repo: Path = kb.REPO, tools=TOOLS, kit_files: Path | None = None) -> Path:
-    if kit_files and (found := private_paths(repo)):
+def make(out: Path, cache: Path, repo: Path = kb.REPO, tools=TOOLS, kit_files: Path | None = None,
+         private_kit: bool = False) -> Path:
+    if private_kit and (found := private_paths(repo, PRIVATE_NOTES)):
+        raise SystemExit(f"error: {repo} is the private repository ({', '.join(found)}); the private kit is built "
+                         "from tools/publish/public_snapshot.py --private-kit --git, then this script from that folder")
+    if kit_files and not private_kit and (found := private_paths(repo)):
         raise SystemExit(f"error: {repo} is the private repository ({', '.join(found)}); a release package with "
                          "--kit-files is built from the public snapshot: run tools/publish/public_snapshot.py --git, "
                          "then this script from that folder")
     commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "--short=10", "HEAD"], capture_output=True,
                             text=True, check=True).stdout.strip()
+    stamp = entry_time(repo)
     stage = out / f"lgp-stage-{commit}"
     shutil.rmtree(stage, ignore_errors=True)
     root = stage / "lgp-recomp"
@@ -159,15 +169,16 @@ def make(out: Path, cache: Path, repo: Path = kb.REPO, tools=TOOLS, kit_files: P
     if tools:
         lines = "\n".join(f"- {name}: {url} (SHA-256 {sha[:16]}…), licence {lic}" for name, url, sha, _, _, lic in tools)
         (stage / "README.txt").write_text(README.format(tools=lines, drop=DROP), encoding="utf-8", newline="\r\n")
-        package = out / f"lgp-bauset-windows-x64-{commit}.zip"
+        package = out / f"{'lgp-kit-' if private_kit else 'lgp-'}bauset-windows-x64-{commit}.zip"
     else:
-        package = out / f"lgp-build-kit-{commit}.zip"
+        package = out / f"{'lgp-kit' if private_kit else 'lgp-build-kit'}-{commit}.zip"
     package.unlink(missing_ok=True)
     with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for p in sorted(stage.rglob("*")):
             if p.is_file():
                 info = zipfile.ZipInfo.from_file(p, p.relative_to(stage).as_posix())
                 info.compress_type = zipfile.ZIP_DEFLATED
+                info.date_time = stamp
                 # Every entry carries a Unix mode: 0o755 where git (or a tool archive) says so, else 0o644, also for
                 # README.txt and kit-files/ (lgp-bauen.command must stay executable for a double-click on the Mac).
                 info.external_attr = (0o100000 | modes.get(p, 0o644)) << 16
@@ -177,6 +188,18 @@ def make(out: Path, cache: Path, repo: Path = kb.REPO, tools=TOOLS, kit_files: P
     shutil.rmtree(stage)
     print(f"{package} ({package.stat().st_size / 1048576:.0f} MiB)")
     return package
+
+def entry_time(repo: Path) -> tuple[int, int, int, int, int, int]:
+    """One time for every ZIP entry: the commit's day minus one, in UTC.
+    A ZIP entry holds a local time without a zone, and unpacking takes it as the unpacking computer's local time.
+    The packing computer's clock (CET) put the files an hour into the future for a Mac in UTC, and Ninja then
+    stopped with "manifest 'build.ninja' still dirty after 100 tries" (Mac VM, 2026-11-03). A day back covers every
+    time zone (UTC-12 to UTC+14), and the same commit always gives the same entries."""
+    seconds = int(subprocess.run(["git", "-C", str(repo), "log", "-1", "--format=%ct", "HEAD"], capture_output=True,
+                                 text=True, check=True).stdout.strip())
+    day = time.gmtime(seconds - 86400)
+    return (max(day.tm_year, 1980), day.tm_mon, day.tm_mday, 0, 0, 0)
+
 
 # Step 3 of the README: the public kit (no dump unpacking, build.DUMP is None) takes an unpacked game folder.
 DROP = ("""3. Drag your dump (NSP/XCI) or the dump ZIP from the kit page into the window, press Enter, confirm "Start?" with y.
@@ -192,10 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cache", help="folder for the downloads (default <out>/downloads)")
     p.add_argument("--kit-files", help="folder with game.cfg and mods/ to put into kit-files/ (release packages only)")
     p.add_argument("--no-tools", action="store_true", help="source code only (lgp-build-kit-<commit>.zip, Mac/Linux)")
+    p.add_argument("--private-kit", action="store_true",
+                   help="package of the private kit for friends (lgp-kit-…, from public_snapshot.py --private-kit)")
     args = p.parse_args(argv)
     out = Path(args.out).resolve()
     make(out, Path(args.cache).resolve() if args.cache else out / "downloads", tools=[] if args.no_tools else TOOLS,
-         kit_files=Path(args.kit_files).resolve() if args.kit_files else None)
+         kit_files=Path(args.kit_files).resolve() if args.kit_files else None, private_kit=args.private_kit)
     return 0
 
 

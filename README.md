@@ -20,7 +20,7 @@ our own menu, local trading and link battles over Wi-Fi, and optional real battl
 > (translated code, shader caches, apps) is generated locally on your own computer and stays there. A
 > pre-commit guard and CI check this on every commit.
 
-This page as of: 2026-11-03.
+This page as of: 2026-11-04.
 
 ## What is this about?
 
@@ -121,7 +121,7 @@ switched off.
 | Data mods | replace individual RomFS files without a new lift; first mod "Begegnungen wie in Gelb" (encounters as in Yellow: species and frequency of wild Pokémon as in Pokémon Yellow) | interface done (#421); the Yellow tables have not yet been checked in the game, replacement files stay private |
 | Game in the app package | a locally built app starts without file selection (except Android/browser) | done |
 | Mod interface | Hooks and patch sites in the translated code, mods as C++; game addresses only in private files ([knowledge doc](docs/knowledge/spiel-mods-hooks.md)) | done (#356, #350) |
-| Original code natively (experiment) | instead of translated C++, the rewritten ARM64 original code runs directly on Apple Silicon | experiment (#446, #456, #461): on the Mac a new game with virtual clock up to Route 1, frame-identical to the translated code at four sample frames; link fix for iOS/tvOS, untested there; on Android (OnePlus 7 Pro, test app, #480) the same image as the translation, same fps (GPU-bound), about 200 MiB less memory; no game build, the translation stays the default |
+| Original code natively (experiment) | instead of translated C++, the rewritten ARM64 original code runs directly on Apple Silicon | experiment (#446, #456, #461): on the Mac a new game with virtual clock up to Route 1, frame-identical to the translated code at four sample frames; on the iPad Pro M1 a native test build (#521, not merged) with the same wgpu-native as the app ran faster than the translation: field 33.9 → 42.4 fps, battle 43.1 → 51.8 fps, memory about the same; on the iPhone about the same fps (~42) (one comparison, not yet repeated); on Android (OnePlus 7 Pro, test app, #480) the same image as the translation, same fps (GPU-bound), about 200 MiB less memory; no game build, the translation stays the default |
 | Tools for tests | virtual guest clock, input scripts, frame checksums, time breakdown per thread | done |
 
 ## How it works
@@ -155,7 +155,10 @@ Fundamental decisions are recorded as ADRs in [`docs/decisions/`](docs/decisions
 
 ## Build it yourself
 
-You need **your own unpacked copy of the base game in version 1.0.0, without an installed update**: a folder with
+> **Step by step for Windows and macOS, with screenshots: [`tools/kit/GUIDE.md`](tools/kit/GUIDE.md).**
+> The ready-made packages are on the releases page.
+
+You need **your own unpacked copy of the base game (either edition, version 1.0.0 or 1.0.2)**: a folder with
 `exefs/` and `romfs/` (or `romfs.bin`). There is no one-click installer; building is done with CMake as below, or with
 the build assistant `python3 tools/kit/build.py` (`lgp-bauen.cmd` or `lgp-bauen.command`), which takes that folder plus
 a folder with `game.cfg` and the mods (`build.py build --kit <game folder> --kit-files <folder>`).
@@ -223,7 +226,7 @@ All use the same translation from step 3.
 | 3 | Encounters as in Yellow, invisible attackers in grass and caves | in progress: invisible attackers built (#431, #457), Yellow tables still unchecked |
 | 4 | Installation packages for Windows and macOS | partly: build assistant and Windows build set without game data (#465, #471); ready-made packages with the game deliberately do not exist |
 | 5 | Play through the whole game and collect bugs | planned |
-| 6 | Ball throw in battle for wild battles | largely done: throwing a ball from the battle bag with the game's catch formula, all ball types, Pokédex and box (#432); repeated catches, also after a restart, run clean on the PC; on the iPad (2026-10-25) "already better", but opening/absorbing and breaking out still show the Let's Go sphere instead of the ball animation; since #502 a Pokémon caught in battle keeps the ball it was caught with, accepted by Paul on the iPad (2026-10-29) |
+| 6 | Ball throw in battle for wild battles | largely done: throwing a ball from the battle bag with the game's catch formula, all ball types, Pokédex and box (#432); repeated catches, also after a restart, run clean on the PC; on the iPad (2026-10-25) "already better", but opening/absorbing and breaking out still show the Let's Go sphere instead of the ball animation; since #502 a Pokémon caught in battle keeps the ball it was caught with, accepted by Paul on the iPad (2026-10-29). Since #558 two menu rows: "Fangen im Kampf" (catch in battle, from the next start) and "Fangart im Kampf" (catch style in battle: Let's Go or Klassisch/classic, only with the first row on). With Let's Go a ball chosen in the battle menu ends the battle and the Let's Go catch scene follows; on the PC (Pikachu 1.0.0) the catch worked, the ball was not used up and the classic style ran as before; the battle ends with the normal flight text, and whether the field Pokémon goes away afterwards without Yellow mode is not checked yet |
 | 7 | Test trading and link battles with the game via your own server | planned |
 
 The complete roadmap with all phases: [`docs/roadmap.md`](docs/roadmap.md).

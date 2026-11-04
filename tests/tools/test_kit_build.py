@@ -1472,6 +1472,38 @@ class PortableAndWeak(unittest.TestCase):
         if sys.platform.startswith("linux"):
             self.assertGreater(kb.free_memory_mib() or 0, 0)
 
+    def test_future_modification_times_are_set_to_now(self):
+        """A package unpacked west of where it was packed holds files ahead of the clock; Ninja then never settles."""
+        import time as _time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for rel in ("a.cpp", "sub/b.h", "work/game.bin", ".git/HEAD", "build/x.o"):
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text("")
+            ahead = _time.time() + 3600
+            for rel in ("a.cpp", "sub/b.h", "work/game.bin", ".git/HEAD", "build/x.o"):
+                os.utime(root / rel, (ahead, ahead))
+            past = _time.time() - 3600
+            (root / "old.txt").write_text("")
+            os.utime(root / "old.txt", (past, past))
+            self.assertEqual(kb.clamp_future_mtimes(root, skip=(root / "work",)), 2)
+            self.assertLess((root / "a.cpp").stat().st_mtime, ahead - 60)
+            self.assertLess((root / "sub" / "b.h").stat().st_mtime, ahead - 60)
+            self.assertAlmostEqual((root / "old.txt").stat().st_mtime, past, delta=1)
+            for rel in ("work/game.bin", ".git/HEAD", "build/x.o"):  # left alone
+                self.assertAlmostEqual((root / rel).stat().st_mtime, ahead, delta=1)
+
+    def test_outside_folder_names_the_tools_there(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp, "kit-tools")
+            (cache / "node-v24.21.0-darwin-arm64").mkdir(parents=True)
+            (cache / "x.tmp").mkdir()
+            (cache / "node.tar.part").write_text("")
+            with mock.patch.object(kb, "tool_cache", lambda: cache), \
+                    mock.patch.object(kb, "user_data_dir", lambda: Path(tmp, "none")):
+                lines = kb.outside_folder(Path(tmp, "work-missing"))
+            self.assertEqual(lines, [f"{cache}: tools (node-v24.21.0-darwin-arm64)"])
+
     def test_package_offers_no_installs(self):
         tc = kb.Toolchain("desktop")
         tc.problems = ["CMake ≥ 3.25 is missing", "Ninja is missing", f"JDK ≥ {kb.MIN_JDK} is missing", "LLVM/clang is missing"]
